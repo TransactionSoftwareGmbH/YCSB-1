@@ -33,6 +33,7 @@ public class TransbaseClient extends DB {
   // Properties:
   //  Connection Properties:
   public static final String CONNECTION_URL = "db.url";
+  public static final String TRANSBASE_PREFIX = "jdbc:transbase:";
   public static final String CONNECTION_USER = "db.user";
   public static final String CONNECTION_PASSWD = "db.passwd";
   public static final String JDBC_AUTO_COMMIT = "jdbc.autocommit";
@@ -53,7 +54,7 @@ public class TransbaseClient extends DB {
   public static final String FIELD_NAME_PREFIX_DEFAULT = "field";
 
   private String dbDriver = "jdbc.transbase.Driver";
-  private String dbUrl = "jdbc:transbase:file://YCSBdb";
+  private String dbUrl = "";
   private String dbUser = "tbadmin";
   private String dbPasswd = "";
   private String dbBatchsize = "0";
@@ -95,6 +96,10 @@ public class TransbaseClient extends DB {
 
     statementsInsert = new HashMap<Set<String>, CachedStatement>();
     statementsUpdate = new HashMap<Set<String>, CachedStatement>();
+    
+    if(!dbUrl.startsWith(TRANSBASE_PREFIX)) {
+      dbUrl = TRANSBASE_PREFIX + dbUrl;
+    }
 
     // create usertable if it does not exist
     try {
