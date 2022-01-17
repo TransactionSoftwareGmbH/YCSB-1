@@ -64,7 +64,7 @@ public class TransbaseClient extends DB {
   private int nrfields = 10;
 
   private Connection con = null;
-  private boolean initialized = false;
+  private volatile boolean initialized = false;
   private Properties props;
 
   private int batchsize;
@@ -76,63 +76,69 @@ public class TransbaseClient extends DB {
     if(initialized) {
       return;
     }
-    initialized = true;
-    
-    props = getProperties();
-    dbUrl = props.getProperty(CONNECTION_URL, dbUrl);
-    dbUser = props.getProperty(CONNECTION_USER, dbUser);
-    dbPasswd = props.getProperty(CONNECTION_PASSWD, dbPasswd);
-    dbDriver = "transbase.jdbc.Driver";
+    synchronized (TransbaseClient.class) {
+      if(initialized) {
+        return;
+      }
+      initialized = true;
 
-    autoCommit = Boolean.parseBoolean(props.getProperty(JDBC_AUTO_COMMIT, JDBC_AUTO_COMMIT_DEFAULT));
+      props = getProperties();
+      dbUrl = props.getProperty(CONNECTION_URL, dbUrl);
+      dbUser = props.getProperty(CONNECTION_USER, dbUser);
+      dbPasswd = props.getProperty(CONNECTION_PASSWD, dbPasswd);
+      dbDriver = "transbase.jdbc.Driver";
 
-    tablename = props.getProperty(TABLE_NAME_PROPERTY, TABLE_NAME_PROPERTY_DEFAULT);
-    fieldnamePrefix = props.getProperty(FIELD_NAME_PREFIX, FIELD_NAME_PREFIX_DEFAULT);
-    nrfields = Integer.parseInt(props.getProperty(FIELD_COUNT_PROPERTY, FIELD_COUNT_PROPERTY_DEFAULT));
+      autoCommit = Boolean.parseBoolean(props.getProperty(JDBC_AUTO_COMMIT, JDBC_AUTO_COMMIT_DEFAULT));
 
-    dbBatchsize = props.getProperty(DB_BATCH_SIZE, DB_BATCH_SIZE_DEFAULT);
-    batchsize = Integer.parseUnsignedInt(dbBatchsize);
-    batchUpdates = Boolean.parseBoolean(props.getProperty(JDBC_BATCH_UPDATES, JDBC_BATCH_UPDATES_DEFAULT));
+      tablename = props.getProperty(TABLE_NAME_PROPERTY, TABLE_NAME_PROPERTY_DEFAULT);
+      fieldnamePrefix = props.getProperty(FIELD_NAME_PREFIX, FIELD_NAME_PREFIX_DEFAULT);
+      nrfields = Integer.parseInt(props.getProperty(FIELD_COUNT_PROPERTY, FIELD_COUNT_PROPERTY_DEFAULT));
 
-    statementsInsert = new HashMap<Set<String>, CachedStatement>();
-    statementsUpdate = new HashMap<Set<String>, CachedStatement>();
-    
-    if(!dbUrl.startsWith(TRANSBASE_PREFIX)) {
-      dbUrl = TRANSBASE_PREFIX + dbUrl;
-    }
+      dbBatchsize = props.getProperty(DB_BATCH_SIZE, DB_BATCH_SIZE_DEFAULT);
+      batchsize = Integer.parseUnsignedInt(dbBatchsize);
+      batchUpdates = Boolean.parseBoolean(props.getProperty(JDBC_BATCH_UPDATES, JDBC_BATCH_UPDATES_DEFAULT));
 
-    // create usertable if it does not exist
-    try {
-      Class.forName(dbDriver);
-      con = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
-      Statement stat = con.createStatement();
-      ResultSet rs = 
-          stat.executeQuery(String.format("select tname from systable where tname = %s", toLiteral(tablename)));
-      boolean exist = rs.next();
-      rs.close();
-      if(!exist) {
-        StringBuffer sql = new StringBuffer("create table ");
-        sql.append(toIdentifier(tablename)).append("(").append(toIdentifier(keyname));
-        sql.append(" string primary key");
-        for(int ii=0; ii<nrfields; ii++) {
-          sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
+      statementsInsert = new HashMap<Set<String>, CachedStatement>();
+      statementsUpdate = new HashMap<Set<String>, CachedStatement>();
+
+      if(!dbUrl.startsWith(TRANSBASE_PREFIX)) {
+        dbUrl = TRANSBASE_PREFIX + dbUrl;
+      }
+
+      // create usertable if it does not exist
+      try {
+        Class.forName(dbDriver);
+        con = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
+
+        Statement stat = con.createStatement();
+        ResultSet rs = 
+            stat.executeQuery(String.format("select tname from systable where tname = %s", toLiteral(tablename)));
+        boolean exist = rs.next();
+        rs.close();
+        if(!exist) {
+          StringBuffer sql = new StringBuffer("create table ");
+          sql.append(toIdentifier(tablename)).append("(").append(toIdentifier(keyname));
+          sql.append(" string primary key");
+          for(int ii=0; ii<nrfields; ii++) {
+            sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
+          }
+          sql.append(")");
+
+          stat.executeUpdate(sql.toString());
         }
-        sql.append(")");
-
-        stat.executeUpdate(sql.toString());
+        if(!autoCommit) {
+          con.setAutoCommit(false);
+        }
+      } catch (SQLException e) {
+        e.printStackTrace();
+        throw new DBException(e.getMessage());
+      } catch (ClassNotFoundException e) {
+        e.printStackTrace();
+        throw new DBException(e.getMessage());
       }
-      if(!autoCommit) {
-        con.setAutoCommit(false);
-      }
-    } catch (SQLException e) {
-      e.printStackTrace();
-      throw new DBException(e.getMessage());
-    } catch (ClassNotFoundException e) {
-      e.printStackTrace();
-      throw new DBException(e.getMessage());
     }
   }
-
+  
   @Override
   public void cleanup() throws DBException {
     completePendingBatches(null);
