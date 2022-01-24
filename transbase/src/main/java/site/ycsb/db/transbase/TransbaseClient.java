@@ -37,7 +37,7 @@ public class TransbaseClient extends DB {
   public static final String CONNECTION_USER = "db.user";
   public static final String CONNECTION_PASSWD = "db.passwd";
   public static final String JDBC_AUTO_COMMIT = "jdbc.autocommit";
-  public static final String JDBC_AUTO_COMMIT_DEFAULT = "true";
+  public static final String JDBC_AUTO_COMMIT_DEFAULT = "false";
 
   //  YCSB Client Properties:
   public static final String DB_BATCH_SIZE = "db.batchsize";
@@ -63,6 +63,7 @@ public class TransbaseClient extends DB {
   private String fieldnamePrefix = "";
   private int nrfields = 10;
 
+  private static Connection globCon = null;
   private Connection con = null;
   private volatile boolean initialized = false;
   private Properties props;
@@ -108,27 +109,26 @@ public class TransbaseClient extends DB {
       // create usertable if it does not exist
       try {
         Class.forName(dbDriver);
-        con = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
+        if(null== globCon) {
+          globCon = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
 
-        Statement stat = con.createStatement();
-        ResultSet rs = 
-            stat.executeQuery(String.format("select tname from systable where tname = %s", toLiteral(tablename)));
-        boolean exist = rs.next();
-        rs.close();
-        if(!exist) {
-          StringBuffer sql = new StringBuffer("create table ");
-          sql.append(toIdentifier(tablename)).append("(").append(toIdentifier(keyname));
+          Statement stat = globCon.createStatement();
+          // stat.executeUpdate("alter database set recovery_method = beforeimage");
+          if(!autoCommit) {
+            globCon.setAutoCommit(false);
+          }
+
+          StringBuffer sql = new StringBuffer("create table if not exists ");
+          sql.append(toIdentifier(tablename)).append(" without ikaccess(").append(toIdentifier(keyname));
           sql.append(" string primary key");
           for(int ii=0; ii<nrfields; ii++) {
             sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
           }
           sql.append(")");
-
           stat.executeUpdate(sql.toString());
         }
-        if(!autoCommit) {
-          con.setAutoCommit(false);
-        }
+
+        con = globCon;
       } catch (SQLException e) {
         e.printStackTrace();
         throw new DBException(e.getMessage());
@@ -141,23 +141,34 @@ public class TransbaseClient extends DB {
   
   @Override
   public void cleanup() throws DBException {
-    completePendingBatches(null);
+    synchronized(con) {
+      try {
+        completePendingBatches(null);
+        if(!autoCommit) {
+          con.commit();
+        }
+      } catch(SQLException e) {
+        throw new DBException(e.getMessage());
+      }
+    }
   }
 
   @Override
   public Status delete(String table, String key) {
-    try {
-      PreparedStatement stmt = getdeleteStatement(table);
-      completePendingBatches(null);
+    synchronized(con) {
+      try {
+        PreparedStatement stmt = getdeleteStatement(table);
+        completePendingBatches(null);
 
-      stmt.setString(1, key);
-      int recs = stmt.executeUpdate();
-      if(0== recs) {
-        return Status.NOT_FOUND;
+        stmt.setString(1, key);
+        int recs = stmt.executeUpdate();
+        if(0== recs) {
+          return Status.NOT_FOUND;
+        }
+      } catch (SQLException e) {
+        // log exception
+        return Status.ERROR;
       }
-    } catch (SQLException e) {
-      // log exception
-      return Status.ERROR;
     }
     return Status.OK;
   }
@@ -165,90 +176,96 @@ public class TransbaseClient extends DB {
   @Override
   public Status insert(String table, String key, Map<String, ByteIterator> values) 
   {
-    try {
-      CachedStatement cs = getInsertStatement(table, values);
-      completePendingBatches(cs);
+    synchronized(con) {
+      try {
+        CachedStatement cs = getInsertStatement(table, values);
+        completePendingBatches(cs);
 
-      PreparedStatement ps = cs.ps;
-      ps.setString(1, key);
-      int pos = 1;
-      for(String f : cs.fields) {
-        cs.ps.setString(++pos, values.get(f).toString());
-      }
-
-      if(0< batchsize) {
-        cs.ps.addBatch();
-        cs.batched++;
-
-        if(cs.batched >= batchsize) {
-          cs.batched = 0;
-          cs.ps.executeBatch();
+        PreparedStatement ps = cs.ps;
+        ps.setString(1, key);
+        int pos = 1;
+        for(String f : cs.fields) {
+          cs.ps.setString(++pos, values.get(f).toString());
         }
-      } else {
-        cs.ps.executeUpdate();
+
+        if(0< batchsize) {
+          cs.ps.addBatch();
+          cs.batched++;
+
+          if(cs.batched >= batchsize) {
+            cs.batched = 0;
+            cs.ps.executeBatch();
+          }
+        } else {
+          cs.ps.executeUpdate();
+        }
+        return Status.OK;
+      } catch (SQLException e) {
+        e.printStackTrace();
+        return Status.ERROR;
       }
-      return Status.OK;
-    } catch (SQLException e) {
-      e.printStackTrace();
-      return Status.ERROR;
     }
   }
 
   @Override
   public Status update(String table, String key, Map<String, ByteIterator> values)
   {
-    try {
-      CachedStatement cs = getUpdateStatement(table,  values);
-      completePendingBatches(cs);
+    synchronized(con) {
+      try {
+        CachedStatement cs = getUpdateStatement(table,  values);
+        completePendingBatches(cs);
 
-      int ii = 0;
-      for(String field: cs.fields) {  // ensure stable order of fields
-        cs.ps.setString(++ii, values.get(field).toString()); // <field> = ?
-      }
-      cs.ps.setString(++ii, key);  // where <key> = ?
-
-      if(batchUpdates && 0< batchsize) {
-        cs.ps.addBatch();
-        cs.batched++;
-
-        if(cs.batched >= batchsize) {
-          cs.batched = 0;
-          cs.ps.executeBatch();
+        int ii = 0;
+        for(String field: cs.fields) {  // ensure stable order of fields
+          cs.ps.setString(++ii, values.get(field).toString()); // <field> = ?
         }
-      } else {
-        cs.ps.executeUpdate();
+        cs.ps.setString(++ii, key);  // where <key> = ?
+
+        if(batchUpdates && 0< batchsize) {
+          cs.ps.addBatch();
+          cs.batched++;
+
+          if(cs.batched >= batchsize) {
+            cs.batched = 0;
+            cs.ps.executeBatch();
+          }
+        } else {
+          cs.ps.executeUpdate();
+        }
+        return Status.OK;
+      } catch (SQLException e) {
+        e.printStackTrace();
+        return Status.ERROR;
       }
-      return Status.OK;
-    } catch (SQLException e) {
-      e.printStackTrace();
-      return Status.ERROR;
     }
   }
 
   @Override
   public Status read(String table, String key, Set<String> fields, Map<String, ByteIterator> result) 
   {
-    try {
-      PreparedStatement stmt = getreadStatement(table, fields);
-      completePendingBatches(null);
+    synchronized(con) {
+      try {
+        PreparedStatement stmt = getreadStatement(table, fields);
+        completePendingBatches(null);
 
-      stmt.setString(1, key);
-      ResultSet res = stmt.executeQuery();
-      if (!res.next()) {
-        res.close();
-        return Status.NOT_FOUND;
-      }
-      if (result != null && fields != null) {
-        for (String field : fields) {
-          String value = res.getString(field);
-          result.put(field, new StringByteIterator(value));
+        stmt.setString(1, key);
+        ResultSet res = stmt.executeQuery();
+        if (!res.next()) {
+          res.close();
+          return Status.NOT_FOUND;
         }
+        if (result != null && fields != null) {
+          for (String field : fields) {
+            String value = res.getString(field);
+            result.put(field, new StringByteIterator(value));
+          }
+        }
+        res.close();
+        return Status.OK;
+      } catch (SQLException e) {
+        System.err.println("Error in read of table " + table + ": " + e);
+        return Status.ERROR;
       }
-      res.close();
-      return Status.OK;
-    } catch (SQLException e) {
-      System.err.println("Error in read of table " + table + ": " + e);
-      return Status.ERROR;
     }
   }
 
@@ -257,29 +274,31 @@ public class TransbaseClient extends DB {
       Vector<HashMap<String, ByteIterator>> result) {
     if((null== result) || (null== fields)) { 
       return Status.BAD_REQUEST; 
-    } 
-    try {
-      PreparedStatement stmt = getscanStatement(table, fields);
-      completePendingBatches(null);
+    }
+    synchronized(con) {
+      try {
+        PreparedStatement stmt = getscanStatement(table, fields);
+        completePendingBatches(null);
 
-      stmt.setString(1, startkey);
-      ResultSet res = stmt.executeQuery();
+        stmt.setString(1, startkey);
+        ResultSet res = stmt.executeQuery();
       
-      int cc = 0;
-      while(res.next() && (cc < recordcount)) {
-        HashMap<String, ByteIterator> rec = new HashMap<String, ByteIterator>();
-        for (String field : fields) {
-          String value = res.getString(field);
-          rec.put(field, (ByteIterator)new StringByteIterator(value));
+        int cc = 0;
+        while(res.next() && (cc < recordcount)) {
+          HashMap<String, ByteIterator> rec = new HashMap<String, ByteIterator>();
+          for (String field : fields) {
+            String value = res.getString(field);
+            rec.put(field, (ByteIterator)new StringByteIterator(value));
+          }
+          result.add(rec);
+          ++cc;
         }
-        result.add(rec);
-        ++cc;
+        res.close();
+        return Status.OK;
+      } catch (SQLException e) {
+        System.err.println("Error in scan of table " + table + ": " + e);
+        return Status.ERROR;
       }
-      res.close();
-      return Status.OK;
-    } catch (SQLException e) {
-      System.err.println("Error in scan of table " + table + ": " + e);
-      return Status.ERROR;
     }
   }
 
