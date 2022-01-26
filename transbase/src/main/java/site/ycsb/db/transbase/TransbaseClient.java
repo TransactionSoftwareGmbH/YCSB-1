@@ -37,7 +37,7 @@ public class TransbaseClient extends DB {
   public static final String CONNECTION_USER = "db.user";
   public static final String CONNECTION_PASSWD = "db.passwd";
   public static final String JDBC_AUTO_COMMIT = "jdbc.autocommit";
-  public static final String JDBC_AUTO_COMMIT_DEFAULT = "false";
+  public static final String JDBC_AUTO_COMMIT_DEFAULT = "true";
 
   //  YCSB Client Properties:
   public static final String DB_BATCH_SIZE = "db.batchsize";
