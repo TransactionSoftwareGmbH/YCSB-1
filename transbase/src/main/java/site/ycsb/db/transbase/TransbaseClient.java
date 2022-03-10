@@ -38,7 +38,7 @@ public class TransbaseClient extends DB {
   public static final String CONNECTION_PASSWD = "db.passwd";
   public static final String JDBC_AUTO_COMMIT = "jdbc.autocommit";
   public static final String JDBC_AUTO_COMMIT_DEFAULT = "true";
-
+  
   //  YCSB Client Properties:
   public static final String DB_BATCH_SIZE = "db.batchsize";
   public static final String DB_BATCH_SIZE_DEFAULT = "10";
@@ -63,79 +63,88 @@ public class TransbaseClient extends DB {
   private String fieldnamePrefix = "";
   private int nrfields = 10;
 
+  private static boolean useGlobCon = false;
   private static Connection globCon = null;
   private Connection con = null;
   private volatile boolean initialized = false;
+  private static volatile boolean tableInitialized = false;
   private Properties props;
 
-  private int batchsize;
   private boolean autoCommit;
   private boolean batchUpdates;
+  private int batchsize;
 
-  //@Override
+  @Override
   public void init() throws DBException {
     if(initialized) {
       return;
     }
-    synchronized (TransbaseClient.class) {
-      if(initialized) {
-        return;
+    initialized = true;
+
+    props = getProperties();
+    dbUrl = props.getProperty(CONNECTION_URL, dbUrl);
+    dbUser = props.getProperty(CONNECTION_USER, dbUser);
+    dbPasswd = props.getProperty(CONNECTION_PASSWD, dbPasswd);
+    dbDriver = "transbase.jdbc.Driver";
+
+    autoCommit = Boolean.parseBoolean(props.getProperty(JDBC_AUTO_COMMIT, JDBC_AUTO_COMMIT_DEFAULT));
+
+    tablename = props.getProperty(TABLE_NAME_PROPERTY, TABLE_NAME_PROPERTY_DEFAULT);
+    fieldnamePrefix = props.getProperty(FIELD_NAME_PREFIX, FIELD_NAME_PREFIX_DEFAULT);
+    nrfields = Integer.parseInt(props.getProperty(FIELD_COUNT_PROPERTY, FIELD_COUNT_PROPERTY_DEFAULT));
+
+    dbBatchsize = props.getProperty(DB_BATCH_SIZE, DB_BATCH_SIZE_DEFAULT);
+    batchsize = Integer.parseUnsignedInt(dbBatchsize);
+    batchUpdates = Boolean.parseBoolean(props.getProperty(JDBC_BATCH_UPDATES, JDBC_BATCH_UPDATES_DEFAULT));
+
+    statementsInsert = new HashMap<Set<String>, CachedStatement>();
+    statementsUpdate = new HashMap<Set<String>, CachedStatement>();
+
+    if(!dbUrl.startsWith(TRANSBASE_PREFIX)) {
+      dbUrl = TRANSBASE_PREFIX + dbUrl;
+    }
+
+    try {
+      Class.forName(dbDriver);
+      if(useGlobCon) {
+        synchronized (TransbaseClient.class) {
+          if(null == globCon) {
+            globCon = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
+          }
+        }
+        con = globCon;
+      } else {
+        con = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
       }
-      initialized = true;
-
-      props = getProperties();
-      dbUrl = props.getProperty(CONNECTION_URL, dbUrl);
-      dbUser = props.getProperty(CONNECTION_USER, dbUser);
-      dbPasswd = props.getProperty(CONNECTION_PASSWD, dbPasswd);
-      dbDriver = "transbase.jdbc.Driver";
-
-      autoCommit = Boolean.parseBoolean(props.getProperty(JDBC_AUTO_COMMIT, JDBC_AUTO_COMMIT_DEFAULT));
-
-      tablename = props.getProperty(TABLE_NAME_PROPERTY, TABLE_NAME_PROPERTY_DEFAULT);
-      fieldnamePrefix = props.getProperty(FIELD_NAME_PREFIX, FIELD_NAME_PREFIX_DEFAULT);
-      nrfields = Integer.parseInt(props.getProperty(FIELD_COUNT_PROPERTY, FIELD_COUNT_PROPERTY_DEFAULT));
-
-      dbBatchsize = props.getProperty(DB_BATCH_SIZE, DB_BATCH_SIZE_DEFAULT);
-      batchsize = Integer.parseUnsignedInt(dbBatchsize);
-      batchUpdates = Boolean.parseBoolean(props.getProperty(JDBC_BATCH_UPDATES, JDBC_BATCH_UPDATES_DEFAULT));
-
-      statementsInsert = new HashMap<Set<String>, CachedStatement>();
-      statementsUpdate = new HashMap<Set<String>, CachedStatement>();
-
-      if(!dbUrl.startsWith(TRANSBASE_PREFIX)) {
-        dbUrl = TRANSBASE_PREFIX + dbUrl;
+      if(!autoCommit) {
+        con.setAutoCommit(false);
       }
+      con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
 
       // create usertable if it does not exist
-      try {
-        Class.forName(dbDriver);
-        if(null== globCon) {
-          globCon = DriverManager.getConnection(dbUrl, dbUser, dbPasswd);
-
-          Statement stat = globCon.createStatement();
-          // stat.executeUpdate("alter database set recovery_method = beforeimage");
-          if(!autoCommit) {
-            globCon.setAutoCommit(false);
+      if(!tableInitialized) {
+        synchronized (TransbaseClient.class) {
+          if(!tableInitialized) {
+            StringBuffer sql = new StringBuffer("create table if not exists ");
+            sql.append(toIdentifier(tablename)).append(" without ikaccess(").append(toIdentifier(keyname));
+            sql.append(" string primary key");
+            for(int ii=0; ii<nrfields; ii++) {
+              sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
+            }
+            sql.append(")");
+            Statement stat = con.createStatement();
+            stat.executeUpdate(sql.toString());
+            tableInitialized = true;
           }
-
-          StringBuffer sql = new StringBuffer("create table if not exists ");
-          sql.append(toIdentifier(tablename)).append(" without ikaccess(").append(toIdentifier(keyname));
-          sql.append(" string primary key");
-          for(int ii=0; ii<nrfields; ii++) {
-            sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
-          }
-          sql.append(")");
-          stat.executeUpdate(sql.toString());
         }
-
-        con = globCon;
-      } catch (SQLException e) {
-        e.printStackTrace();
-        throw new DBException(e.getMessage());
-      } catch (ClassNotFoundException e) {
-        e.printStackTrace();
-        throw new DBException(e.getMessage());
       }
+
+    } catch (SQLException e) {
+      e.printStackTrace();
+      throw new DBException(e.getMessage());
+    } catch (ClassNotFoundException e) {
+      e.printStackTrace();
+      throw new DBException(e.getMessage());
     }
   }
   
@@ -188,11 +197,11 @@ public class TransbaseClient extends DB {
           cs.ps.setString(++pos, values.get(f).toString());
         }
 
-        if(0< batchsize) {
+        if(batchUpdates) {
           cs.ps.addBatch();
           cs.batched++;
 
-          if(cs.batched >= batchsize) {
+          if(0< batchsize && batchsize <= cs.batched) {
             cs.batched = 0;
             cs.ps.executeBatch();
           }
@@ -221,11 +230,11 @@ public class TransbaseClient extends DB {
         }
         cs.ps.setString(++ii, key);  // where <key> = ?
 
-        if(batchUpdates && 0< batchsize) {
+        if(batchUpdates) {
           cs.ps.addBatch();
           cs.batched++;
 
-          if(cs.batched >= batchsize) {
+          if(0 < batchsize && batchsize <= cs.batched) {
             cs.batched = 0;
             cs.ps.executeBatch();
           }
