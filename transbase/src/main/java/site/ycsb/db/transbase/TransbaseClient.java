@@ -120,6 +120,8 @@ public class TransbaseClient extends DB {
         con.setAutoCommit(false);
       }
       con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
+      Statement stat = con.createStatement();
+      stat.executeUpdate("alter session set lock_mode = tables");
 
       // create usertable if it does not exist
       if(!tableInitialized) {
@@ -132,7 +134,6 @@ public class TransbaseClient extends DB {
               sql.append(",").append(fieldnamePrefix).append(ii).append(" string");
             }
             sql.append(")");
-            Statement stat = con.createStatement();
             stat.executeUpdate(sql.toString());
             tableInitialized = true;
           }
