@@ -13,11 +13,12 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.Vector;
 
+import site.ycsb.ByteArrayByteIterator;
 import site.ycsb.ByteIterator;
 import site.ycsb.DB;
 import site.ycsb.DBException;
 import site.ycsb.Status;
-import site.ycsb.StringByteIterator;
+// import site.ycsb.StringByteIterator;
 
 /**
  * <a href="https://www.tranbase.de/">Transbase</a> binding for YCSB.
@@ -266,8 +267,10 @@ public class TransbaseClient extends DB {
         }
         if (result != null && fields != null) {
           for (String field : fields) {
-            String value = res.getString(field);
-            result.put(field, new StringByteIterator(value));
+            // String value = res.getString(field);
+            // result.put(field, new StringByteIterator(value));
+            byte[] value = res.getBytes(field);
+            result.put(field, new ByteArrayByteIterator(value));
           }
         }
         res.close();
@@ -297,8 +300,10 @@ public class TransbaseClient extends DB {
         while(res.next() && (cc < recordcount)) {
           HashMap<String, ByteIterator> rec = new HashMap<String, ByteIterator>();
           for (String field : fields) {
-            String value = res.getString(field);
-            rec.put(field, (ByteIterator)new StringByteIterator(value));
+            // String value = res.getString(field);
+            // rec.put(field, (ByteIterator)new StringByteIterator(value));
+            byte[] value = res.getBytes(field);
+            rec.put(field, new ByteArrayByteIterator(value));
           }
           result.add(rec);
           ++cc;
